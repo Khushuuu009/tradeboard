@@ -1,0 +1,2 @@
+[console_scripts]
+jdata = jugaad_data.cli:cli
