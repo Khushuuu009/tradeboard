@@ -1,113 +1,97 @@
 from fastapi import APIRouter
-from fastapi.responses import FileResponse
-from datetime import datetime, timedelta, date
-from collections import deque
-import pandas as pd
-import requests as req
-
+from datetime import datetime
+from app.services.dhan_live import get_live_straddle, get_intraday_vwap, calculate_max_pain
 from app.services.news_fetcher import fetch_news
-from app.services.vwap_calculator import get_vwap
-from app.services.expiry_analyzer import analyze_expiry_days, run_vwap_backtest
-from app.services.dhan_live import get_live_straddle, get_dhan
 
 router = APIRouter()
 
-# ── IN-MEMORY STRADDLE HISTORY ─────────────────────────────────────────────
-# Stores today's 1-min straddle data — persists until backend restarts
-today_straddle_history: deque = deque(maxlen=500)  # ~8 hours of 1-min data
 
-
-@router.get("/test")
-async def test():
-    return {"status": "running", "message": "Trading Dashboard API is live!"}
-
-
-@router.get("/news")
-async def get_news():
-    return fetch_news()
+@router.get("/live-straddle")
+async def live_straddle(symbol: str = "NIFTY"):
+    """Get live straddle data with VWAP and Max Pain"""
+    return get_live_straddle(symbol)
 
 
 @router.get("/vwap")
-async def get_vwap_data():
-    return get_vwap("NIFTY")
+async def vwap(symbol: str = "NIFTY"):
+    """Get VWAP data"""
+    return get_intraday_vwap(symbol)
 
 
-@router.get("/expiry-analysis")
-async def get_expiry_analysis():
-    return analyze_expiry_days(months=6)
-
-
-@router.get("/vwap-backtest")
-async def get_vwap_backtest(months: int = 12):
-    return run_vwap_backtest(months)
-
-
-@router.get("/straddle-csv")
-async def get_straddle_csv():
-    return FileResponse(
-        "data/nifty_straddle_history.csv",
-        media_type="text/csv",
-        filename="nifty_straddle_history.csv"
-    )
-
-
-@router.get("/daily-straddle")
-async def get_daily_straddle(months: int = 3):
+@router.get("/max-pain")
+async def max_pain(symbol: str = "NIFTY"):
+    """Get Max Pain analysis"""
     try:
-        df           = pd.read_csv("data/nifty_straddle_history.csv")
-        cutoff       = (datetime.today() - timedelta(days=months * 30)).strftime("%Y-%m-%d")
-        df           = df[df["date"] >= cutoff]
-        df           = df.sort_values("date", ascending=False)
-        df           = df.fillna("")
-        results      = df.to_dict(orient="records")
-        avg_straddle = round(df["straddle_close"].mean(), 2)
+        straddle_data = get_live_straddle(symbol)
+        
+        if straddle_data.get("status") != "success":
+            return {"status": "error", "message": straddle_data.get("message")}
+        
+        max_pain_data = calculate_max_pain(
+            straddle_data.get("option_chain", []),
+            straddle_data.get("spot")
+        )
+        
         return {
             "status": "success",
-            "summary": {
-                "total_days":         len(results),
-                "avg_straddle_close": avg_straddle,
-                "analysis_period":    f"Last {months} months",
-                "data_source":        "Dhan (VWAP) + FinanceDeft (Options)",
-                "last_updated":       datetime.now().strftime("%d %b %Y %I:%M %p"),
-            },
-            "results": results,
+            "symbol": symbol,
+            "spot": straddle_data.get("spot"),
+            "max_pain_level": max_pain_data.get("max_pain_level"),
+            "pain_value": max_pain_data.get("pain_value"),
+            "distance": max_pain_data.get("distance_from_spot"),
+            "bias": max_pain_data.get("bias"),
+            "signal": max_pain_data.get("signal"),
+            "pcr": max_pain_data.get("pcr"),
+            "market_pressure": max_pain_data.get("market_pressure"),
+            "last_updated": datetime.now().strftime("%I:%M:%S %p")
         }
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
 
-@router.get("/live-straddle")
-async def live_straddle(symbol: str = "NIFTY"):
-    return get_live_straddle(symbol)
+@router.get("/news")
+async def news():
+    """Get latest financial news"""
+    return fetch_news()
 
 
-@router.get("/record-straddle")
-async def record_straddle(symbol: str = "NIFTY"):
-    """Called every minute to record live straddle into memory"""
+@router.get("/daily-straddle")
+async def daily_straddle(months: int = 6):
+    """Get historical straddle data for research"""
     try:
-        data = get_live_straddle(symbol)
-        if data["status"] == "success":
-            now = datetime.now()
-            point = {
-                "time":     now.strftime("%I:%M %p"),
-                "straddle": data["straddle"],
-                "spot":     data["spot"],
-                "ce":       data["ce_price"],
-                "pe":       data["pe_price"],
-                "strike":   data["atm"],
-            }
-            today_straddle_history.append(point)
-            return {"status": "ok", "points": len(today_straddle_history), "latest": point}
-        return {"status": "error", "message": "Live straddle fetch failed"}
+        from app.services.expiry_analyzer import run_daily_straddle
+        result = run_daily_straddle(months)
+        return result
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
 
-@router.get("/today-straddle")
-async def get_today_straddle(symbol: str = "NIFTY"):
-    """Return full today's straddle history from memory"""
+@router.get("/expiry-analysis")
+async def expiry_analysis(months: int = 6):
+    """Get expiry day analysis for research"""
+    try:
+        from app.services.expiry_analyzer import analyze_expiry_days
+        result = analyze_expiry_days(months)
+        return result
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@router.get("/vwap-backtest")
+async def vwap_backtest(months: int = 12):
+    """Get VWAP backtest results for research"""
+    try:
+        from app.services.expiry_analyzer import run_vwap_backtest
+        result = run_vwap_backtest(months)
+        return result
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@router.get("/health")
+async def health():
+    """Health check endpoint"""
     return {
-        "status": "success",
-        "data":   list(today_straddle_history),
-        "points": len(today_straddle_history),
+        "status": "healthy",
+        "timestamp": datetime.now().isoformat()
     }
