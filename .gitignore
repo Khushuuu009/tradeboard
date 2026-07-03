@@ -2,3 +2,5 @@
 backend/data/straddle_cache.json
 backend/data/straddle_*.json
 backend/security_id_list.csv
+.vercel
+.env*
